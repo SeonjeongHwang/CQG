@@ -121,6 +121,7 @@ from transformers.models.mbart.modeling_mbart import shift_tokens_right
 import nltk
 import os
 
+device_ids = list(range(torch.cuda.device_count()))
 
 def set_seed(args):
     random.seed(args.seed)
@@ -156,13 +157,14 @@ def parse_arguments(parser: argparse.ArgumentParser):
     parser.add_argument('--bert_folder', type=str, default="",
                         help="The folder name that contains the BERT model")
     parser.add_argument('--bert_model_name', type=str, default="mbart-large-cc25", help="The bert model name to used")
+    parser.add_argument('--checkpoint', type=str, help="trained model checkpoint")
 
     # training
     parser.add_argument('--mode', type=str, default="train", help="training or testing")
     parser.add_argument('--learning_rate', type=float, default=2e-5, help="learning rate of the AdamW optimizer")
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help="The maximum gradient norm")
     parser.add_argument('--num_epochs', type=int, default=50, help="The number of epochs to run")
-    parser.add_argument('--early_stop', type=int, default=8, help="The number of epochs to early stop")
+    parser.add_argument('--early_stop', type=int, default=10, help="The number of epochs to early stop")
     parser.add_argument('--task', type=str, default="bert2tf")
 
     parser.add_argument('--fp16', type=int, default=0, choices=[0, 1], help="fp16")
@@ -183,7 +185,6 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
 
     model = Bert2tf(config, tokenizer)
     model.to(dev)
-    device_ids = [0,1,2,3]
     if config.gpus:
         model = nn.DataParallel(model, device_ids=device_ids, output_device=0)
     if config.fp16:
@@ -193,7 +194,8 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
     optimizer.zero_grad()
     model.zero_grad()
     best_accuracy = -1
-    os.makedirs(f"model_files/{config.model_folder}", exist_ok=True)  ## create model files. not raise error if exist
+    model_dir = f"model_files/{config.model_folder}"
+    os.makedirs(model_dir, exist_ok=True)  ## create model files. not raise error if exist
     stop_num = 0
     for epoch in range(num_epochs):
         total_loss = 0
@@ -239,8 +241,8 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
             if accuracy > best_accuracy:
                 print(f"[Model Info] Saving the best model...")
                 stop_num = 0
-                torch.save(model.state_dict(), 'model.pth')
                 best_accuracy = accuracy
+                torch.save(model.state_dict(), f'{model_dir}/model_{round(best_accuracy,6)}.pth')
                 print(f"The best bleu is: {best_accuracy}, the early_stop_num is: {stop_num}")
             else:
                 stop_num += 1
@@ -249,7 +251,7 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
                     print("Early Stop!")
                     break
     print(f"[Model Info] Returning the best model")
-    modeldict = torch.load('model.pth')
+    modeldict = torch.load(f'{model_dir}/model_{round(best_accuracy,6)}.pth')
     model.load_state_dict(modeldict)
     return model
 
@@ -368,14 +370,16 @@ def main():
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
     # Read dataset
-    print("[Data Info] Reading training data", flush=True)
-    dataset = FCDataset(tokenizer=tokenizer, file=conf.train_file, max_question_len=conf.max_seq_length,
-                        max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
-                        number=conf.train_num, is_training=True)
+    if opt.mode == "train":
+        print("[Data Info] Reading training data", flush=True)
+        dataset = FCDataset(tokenizer=tokenizer, file=conf.train_file, max_question_len=conf.max_seq_length,
+                            max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                            number=conf.train_num, is_training=True)
+        
     print("[Data Info]  Reading validation data", flush=True)
     eval_dataset = FCDataset(tokenizer=tokenizer, file=conf.dev_file, max_question_len=conf.max_seq_length,
-                             max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
-                             number=conf.dev_num)
+                            max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                            number=conf.dev_num)
 
     test_dataset = FCDataset(tokenizer=tokenizer, file=conf.test_file, max_question_len=conf.max_seq_length,
                              max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
@@ -407,7 +411,6 @@ def main():
                       dev=conf.device,
                       tokenizer=tokenizer)
 
-        device_ids = [0,1,2,3]
         if conf.gpus:
             model = nn.DataParallel(model, device_ids=device_ids, output_device=0)
         BLEU_score = test(conf, test_dataloader, model, conf.device, tokenizer)
@@ -420,9 +423,9 @@ def main():
         print("[Model Info] Loading the saved model", flush=True)
         model = Bert2tf(conf, tokenizer)
         if conf.gpus:
-            device_ids = [0, 1, 2, 3]
             model = nn.DataParallel(model, device_ids=device_ids, output_device=0)
-        modeldict = torch.load(f'model.pth')
+        model_dir = f"model_files/{conf.model_folder}"
+        modeldict = torch.load(f'{model_dir}/{opt.checkpoint}')
         model.load_state_dict(modeldict)
         model.to(conf.device)
         test(conf, valid_dataloader, model, conf.device, tokenizer)
