@@ -11,8 +11,8 @@ import re
 import copy
 
 
-FCInst = collections.namedtuple('FCInst', 'question answer fact entity')
-FCFeat = collections.namedtuple('FCFeat', 'input_ids question_ids flag is_training')
+FCInst = collections.namedtuple('FCInst', 'fid question answer fact entity')
+FCFeat = collections.namedtuple('FCFeat', 'fid input_ids question_ids flag is_training')
 
 def convert_instances_to_feature_tensors(instances: List[FCInst],
                                          tokenizer: PreTrainedTokenizer,
@@ -48,8 +48,7 @@ def convert_instances_to_feature_tensors(instances: List[FCInst],
                     for i in range(idx+1, idx+1+len(e)):
                         flag[0][i] = 1
                     break
-
-        if is_training:    
+        if is_training:
             for i in range(len(token_q)):
                 if i == 0:
                     continue
@@ -58,12 +57,19 @@ def convert_instances_to_feature_tensors(instances: List[FCInst],
                     if token_fact[j] == token_q[i-1] and tmp[j+1] == 1:
                         tmp[j+1] = 2
                 flag.append(tmp)
+
         batch_input = tokenizer.encode(fact, add_special_tokens=True, truncation=True)
         target_ids = tokenizer.encode(target, add_special_tokens=True, truncation=True)
-        features.append(FCFeat(input_ids=batch_input,
+
+        assert len(batch_input) == len(flag[0])
+        if is_training:
+            assert len(target_ids)-2 == len(flag)
+        
+        features.append(FCFeat(fid=inst.fid,
+                        input_ids=batch_input,
                         question_ids=target_ids,
-                        flag = flag,
-                        is_training=is_training))
+                        flag = flag, ## (q_len, f_len+2)
+                        is_training=is_training))   
     return features 
 
 class FCDataset(Dataset):
@@ -78,6 +84,7 @@ class FCDataset(Dataset):
                  mode='generation',
                  is_training=False) -> None:
         insts = []
+        self.fid_to_qid = dict()
         self.skip_num = 0
         self.tokenizer = tokenizer
         self.pretrain_model_name = pretrain_model_name
@@ -88,8 +95,11 @@ class FCDataset(Dataset):
         if number >= 0:
             data = data[:number]
 
-        for sample in tqdm(data):
-            insts.append(FCInst(question=str(sample['question']),
+        for fid, sample in tqdm(enumerate(data)):
+            qid = sample["_id"]
+            self.fid_to_qid[fid] = qid
+            insts.append(FCInst(fid=fid,
+                                question=str(sample['question']),
                                 answer=str(sample['answer']),
                                 fact = str(sample['fact']),
                                 entity = sample['entity']))
@@ -117,12 +127,12 @@ class FCDataset(Dataset):
             flag = [item + [0] * (max_wordpiece_length - len(item)) for item in flag]
             if feature.is_training:
                 flag = flag + [[0] * max_wordpiece_length] * (max_question_length - len(flag))
-
             #pad_label_length = max_label_length - len(feature.label)
-            batch[i] = FCFeat(input_ids=np.asarray(feature.input_ids + [0] * padding_length),
-                               question_ids=np.asarray(feature.question_ids + [0] * pad_label_length),
-                               flag=np.asarray(flag),
-                               is_training=np.asarray(feature.is_training))
+            batch[i] = FCFeat(fid=feature.fid,
+                              input_ids=np.asarray(feature.input_ids + [0] * padding_length),
+                              question_ids=np.asarray(feature.question_ids + [0] * pad_label_length),
+                              flag=np.asarray(flag),
+                              is_training=np.asarray(feature.is_training))
         #print(batch)
         results = FCFeat(*(default_collate(samples) for samples in zip(*batch)))
         return results

@@ -30,7 +30,7 @@ class Config:
 		self.device = torch.device(args.device)
 		self.num_epochs = args.num_epochs
 		self.early_stop = args.early_stop
-		self.num_workers = 8
+		self.num_workers = 1
 
 		# model
 		self.model_folder = args.model_folder

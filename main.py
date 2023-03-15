@@ -28,8 +28,9 @@ from transformers import BertModel
 import copy
 from rouge import Rouge
 import numpy as np
+import spacy
 
-
+FCDataset = None
 SEP = '[SEP]'
 CLS = '[CLS]'
 PAD = '[PAD]'
@@ -67,6 +68,8 @@ class Bert2tf(nn.Module):
                                            eos_token_id=self.eos_index)
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.pad_index)
 
+        self.nlp = spacy.load("en_core_web_sm")
+
 
     def forward(self, words, target, flag):
         #print(words)
@@ -91,7 +94,7 @@ class Bert2tf(nn.Module):
         encoder_output = self.ffn_layer_norm(encoder_output)
         encoder_mask = words.ne(self.pad_index)
         state = self.decoder.init_state(encoder_output, encoder_mask)
-        pred = self.generator.generate(state, flag=flag)
+        pred = self.generator.generate(state, flag=flag, encoder_inputs=words, tokenizer=self.tokenizer, nlp=self.nlp)
         batch_size, tgt_len = pred.size(0), pred.size(1)
         hypothesis = []
         for i in range(batch_size):
@@ -113,7 +116,6 @@ import torch
 import torch.nn as nn
 import argparse
 from utils.config import Config
-from dataset import FCDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils.util import get_optimizers, clip_gradients
@@ -135,13 +137,15 @@ def parse_arguments(parser: argparse.ArgumentParser):
     # data Hyperparameters
     parser.add_argument('--device', type=str, default="cuda:0", choices=['cpu', 'cuda:0', 'cuda:1', 'cuda:2'],
                         help="GPU/CPU devices")
-    parser.add_argument('--batch_size', type=int, default=32, help="default batch size is 10 (works well)")
+    parser.add_argument('--batch_size', type=int, default=10, help="default batch size is 10 (works well)")
     parser.add_argument('--max_seq_length', type=int, default=100, help="maximum sequence length")
     parser.add_argument('--generated_max_length', type=int, default=150, help="maximum target length")
     parser.add_argument('--max_candidate_length', type=int, default=20, help="maximum number of candidate tokens")
     parser.add_argument('--train_num', type=int, default=-1, help="The number of training data, -1 means all data")
     parser.add_argument('--dev_num', type=int, default=-1, help="The number of development data, -1 means all data")
     parser.add_argument('--test_num', type=int, default=-1, help="The number of development data, -1 means all data")
+
+    parser.add_argument('--entity-level', type=str, default="ner", help="ner/element")
 
     parser.add_argument('--train_file', type=str, default="data/train.json")
     parser.add_argument('--dev_file', type=str, default="data/dev.json")
@@ -173,11 +177,12 @@ def parse_arguments(parser: argparse.ArgumentParser):
     # Print out the arguments
     for k in args.__dict__:
         print(k + ": " + str(args.__dict__[k]))
+
     return args
 
 
-def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_stop: int, 
-          bert_model_name: str, dev: torch.device, valid_dataloader: DataLoader = None, tokenizer=None):
+def train(config: Config, train_dataloader: DataLoader, train_dataset: FCDataset, num_epochs: int, early_stop: int, 
+          bert_model_name: str, dev: torch.device, valid_dataloader: DataLoader = None, valid_dataset: FCDataset = None, tokenizer=None):
     metric = None
     #metric = load_metric("bleu")
     gradient_accumulation_steps = 1
@@ -236,7 +241,7 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
               flush=True)
         if valid_dataloader is not None:
             model.eval()
-            accuracy = test(config=config, valid_dataloader=valid_dataloader, model=model, dev=dev, tokenizer=tokenizer)
+            accuracy = test(config=config, valid_dataloader=valid_dataloader, dataset=valid_dataset, model=model, dev=dev, tokenizer=tokenizer)
             print(f"The dev bleu is: {accuracy}")
             if accuracy > best_accuracy:
                 print(f"[Model Info] Saving the best model...")
@@ -256,9 +261,10 @@ def train(config: Config, train_dataloader: DataLoader, num_epochs: int, early_s
     return model
 
 
-def test(config: Config, valid_dataloader: DataLoader, model: nn.Module, dev: torch.device,
+def test(config: Config, valid_dataloader: DataLoader, dataset: FCDataset, model: nn.Module, dev: torch.device,
          tokenizer):
     model.eval()
+    fids = []
     predictions_text = []
     targets_text = []
     predictions = []
@@ -266,16 +272,7 @@ def test(config: Config, valid_dataloader: DataLoader, model: nn.Module, dev: to
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
         for index, batch in tqdm(enumerate(valid_dataloader), desc="--validation", total=len(valid_dataloader)):
             generated_ids = model.module.generate(batch.input_ids.to(dev), batch.flag.to(dev))
-            '''
-            target_id = batch.label_id.to(dev)
-            lm_labels = target_id.clone()
-            mask = batch.attention_mask.to(dev)
-            lm_labels[target_id == tokenizer.pad_token_id] = -100
-            decoder_input_ids = shift_tokens_right(target_id, tokenizer.pad_token_id)
-            print(generated_ids.size(), mask.size(), decoder_input_ids.size(), lm_labels.size())
-            loss = model(generated_ids, attention_mask=mask, labels=lm_labels)
-            eval_loss += loss.item()
-            '''
+            fids += batch.fid
             preds = [
                 tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True).strip()
                 for g in generated_ids
@@ -322,8 +319,9 @@ def test(config: Config, valid_dataloader: DataLoader, model: nn.Module, dev: to
     
     file_data = []
     new_data = []
-    for pred, gold in zip(predictions_text, targets_text):
-        dict1 = {'pred': pred, 'gold': gold}
+    for fid, pred, gold in zip(fids, predictions_text, targets_text):
+        _id = dataset.fid_to_qid[fid.item()]
+        dict1 = {'_id': _id, 'pred': pred, 'gold': gold}
         pred1 = tokenizer.tokenize(pred)
         gold = tokenizer.tokenize(gold)
         s = nltk.translate.bleu_score.sentence_bleu([gold], pred1)
@@ -361,6 +359,12 @@ def test(config: Config, valid_dataloader: DataLoader, model: nn.Module, dev: to
 def main():
     parser = argparse.ArgumentParser(description="Cloze Test question answering")
     opt = parse_arguments(parser)
+
+    if opt.entity_level == "ner":
+        from dataset import FCDataset
+    elif opt.entity_level == "element":
+        from dataset_element import FCDataset
+
     set_seed(opt)
     conf = Config(opt)
     if conf.bert_folder != "":
@@ -369,25 +373,23 @@ def main():
         bert_model_name = conf.bert_model_name
     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-    # Read dataset
+    # Prepare data loader
     if opt.mode == "train":
         print("[Data Info] Reading training data", flush=True)
         dataset = FCDataset(tokenizer=tokenizer, file=conf.train_file, max_question_len=conf.max_seq_length,
                             max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
                             number=conf.train_num, is_training=True)
         
-    print("[Data Info]  Reading validation data", flush=True)
-    eval_dataset = FCDataset(tokenizer=tokenizer, file=conf.dev_file, max_question_len=conf.max_seq_length,
-                            max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
-                            number=conf.dev_num)
+        print("[Data Info]  Reading validation data", flush=True)
+        eval_dataset = FCDataset(tokenizer=tokenizer, file=conf.dev_file, max_question_len=conf.max_seq_length,
+                                max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                                number=conf.dev_num)
 
-    test_dataset = FCDataset(tokenizer=tokenizer, file=conf.test_file, max_question_len=conf.max_seq_length,
-                             max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
-                             number=conf.test_num)
-
-
-    # Prepare data loader
-    if opt.mode == "train":
+        print("[Data Info]  Reading test data", flush=True)
+        test_dataset = FCDataset(tokenizer=tokenizer, file=conf.test_file, max_question_len=conf.max_seq_length,
+                                max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                                number=conf.test_num)
+        
         print("[Data Info] Loading training data", flush=True)
         train_dataloader = DataLoader(dataset, batch_size=conf.batch_size, shuffle=True,
                                       num_workers=conf.num_workers,
@@ -395,31 +397,36 @@ def main():
         print("[Data Info] Loading validation data", flush=True)
         valid_dataloader = DataLoader(eval_dataset, batch_size=conf.batch_size, shuffle=False,
                                       num_workers=conf.num_workers,
-                                      collate_fn=eval_dataset.collate_fn)
-        
+                                      collate_fn=eval_dataset.collate_fn)        
         print("[Data Info] Loading test data", flush=True)
         test_dataloader = DataLoader(test_dataset, batch_size=conf.batch_size, shuffle=False,
                                       num_workers=conf.num_workers,
-                                      collate_fn=eval_dataset.collate_fn)
+                                      collate_fn=test_dataset.collate_fn)
 
         # Train the model
         model = train(conf, train_dataloader,
+                      train_dataset=dataset,
                       num_epochs=conf.num_epochs,
                       early_stop=conf.early_stop,
                       bert_model_name=bert_model_name,
                       valid_dataloader=valid_dataloader,
+                      valid_dataset=eval_dataset,
                       dev=conf.device,
                       tokenizer=tokenizer)
 
         if conf.gpus:
             model = nn.DataParallel(model, device_ids=device_ids, output_device=0)
-        BLEU_score = test(conf, test_dataloader, model, conf.device, tokenizer)
+        BLEU_score = test(conf, test_dataloader, test_dataset, model, conf.device, tokenizer)
         print(f"The test bleu is: {BLEU_score}")
     elif opt.mode == "test":
-        print("[Data Info] Loading validation data", flush=True)
+        print("[Data Info]  Reading test data", flush=True)
+        test_dataset = FCDataset(tokenizer=tokenizer, file=conf.test_file, max_question_len=conf.max_seq_length,
+                                max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                                number=conf.test_num)
+        print("[Data Info] Loading test data", flush=True)
         valid_dataloader = DataLoader(test_dataset, batch_size=conf.batch_size, shuffle=False,
                                       num_workers=conf.num_workers,
-                                      collate_fn=eval_dataset.collate_fn)
+                                      collate_fn=test_dataset.collate_fn)
         print("[Model Info] Loading the saved model", flush=True)
         model = Bert2tf(conf, tokenizer)
         if conf.gpus:
@@ -428,7 +435,25 @@ def main():
         modeldict = torch.load(f'{model_dir}/{opt.checkpoint}')
         model.load_state_dict(modeldict)
         model.to(conf.device)
-        test(conf, valid_dataloader, model, conf.device, tokenizer)
+        test(conf, valid_dataloader, test_dataset, model, conf.device, tokenizer)
+    elif opt.mode == "generate":
+        print("[Data Info]  Reading data", flush=True)
+        dataset = FCDataset(tokenizer=tokenizer, file=conf.test_file, max_question_len=conf.max_seq_length,
+                            max_answer_length=conf.generated_max_length, pretrain_model_name=bert_model_name,
+                            number=conf.test_num)
+        print("[Data Info] Loading data", flush=True)
+        dataloader = DataLoader(dataset, batch_size=conf.batch_size, shuffle=False,
+                                      num_workers=conf.num_workers,
+                                      collate_fn=dataset.collate_fn)
+        print("[Model Info] Loading the saved model", flush=True)
+        model = Bert2tf(conf, tokenizer)
+        if conf.gpus:
+            model = nn.DataParallel(model, device_ids=device_ids, output_device=0)
+        model_dir = f"model_files/{conf.model_folder}"
+        modeldict = torch.load(f'{model_dir}/{opt.checkpoint}') #, map_location=torch.device('cpu'))
+        model.load_state_dict(modeldict)
+        model.to(conf.device)
+        test(conf, dataloader, dataset, model, conf.device, tokenizer)
 
 
 if __name__ == "__main__":

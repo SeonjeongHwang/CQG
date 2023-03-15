@@ -10,6 +10,7 @@ from fastNLP.modules.decoder.seq2seq_decoder import Seq2SeqDecoder, State
 import torch.nn.functional as F
 from fastNLP.core.utils import _get_model_device
 from functools import partial
+import copy
 
 
 class SequenceGenerator:
@@ -41,7 +42,7 @@ class SequenceGenerator:
                                          temperature=temperature, top_k=top_k, top_p=top_p, bos_token_id=bos_token_id,
                                          eos_token_id=eos_token_id, repetition_penalty=repetition_penalty,
                                          length_penalty=length_penalty, pad_token_id=pad_token_id)
-        else:
+        else: ## default
             self.generate_func = partial(greedy_generate, decoder=decoder, max_length=max_length, max_len_a=max_len_a,
                                          num_beams=num_beams,
                                          bos_token_id=bos_token_id, eos_token_id=eos_token_id,
@@ -60,7 +61,7 @@ class SequenceGenerator:
         self.decoder = decoder
 
     @torch.no_grad()
-    def generate(self, state, tokens=None, flag=None):
+    def generate(self, state, tokens=None, flag=None, encoder_inputs=None, tokenizer=None, nlp=None):
         """
         :param State state: encoder结果的State, 是与Decoder配套是用的
         :param torch.LongTensor,None tokens: batch_size x length, 开始的token。如果为None，则默认添加bos_token作为开头的token
@@ -69,13 +70,79 @@ class SequenceGenerator:
         """
         #
         #print(flag.size())
-        return self.generate_func(tokens=tokens, state=state, flag=flag)
+        return self.generate_func(tokens=tokens, state=state, flag=flag, encoder_inputs=encoder_inputs, tokenizer=tokenizer, nlp=nlp)
 
+@torch.no_grad()
+def __update_flag(encoder_inputs, preds, flags, tokenizer, nlp):
+    device = flags.device
+    mask = flags.squeeze(1) > 0
+    entities_tokens_seq = encoder_inputs*mask
+    preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+
+    new_flags = []
+    for __, (entities_tokens, pred, flag) in enumerate(zip(entities_tokens_seq, preds, flags.squeeze(1))):
+        new_flag = copy.deepcopy(flag)
+
+        decoded_entities = tokenizer.convert_ids_to_tokens(entities_tokens)
+        entity_to_ids = []
+        id_list = []
+        entity = ""
+        for _id, token in enumerate(decoded_entities):
+            if token == "[PAD]":
+                continue
+            if token.startswith("##"):
+                entity += token[2:]
+                id_list.append(_id)
+            else:
+                if entity != "":
+                    entity_lemma = [token.lemma_ for token in nlp(entity)][0]
+                    entity_to_ids.append((entity_lemma, id_list))
+                entity = token
+                id_list = [_id]
+        if entity != "":
+            entity_lemma = [token.lemma_ for token in nlp(entity)][0]
+            entity_to_ids.append((entity_lemma, id_list))
+        #if __ == 0:
+        #    print([e[0] for e in entity_to_ids])
+        #    print(decoded_entities)
+        #    print(flag)
+        pred_lemma = [token.lemma_ for token in nlp(pred)]
+        for entity, id_list in entity_to_ids:
+            if entity in pred_lemma:
+                for _id in id_list:
+                    new_flag[_id] = 2
+            
+        new_flags.append(new_flag.unsqueeze(0))
+
+    return torch.cat(new_flags, dim=0).unsqueeze(1).to(device)
+
+@torch.no_grad()
+def update_flag(encoder_inputs, preds, flags, tokenizer, nlp):
+    device = flags.device
+    mask = flags.squeeze(1) > 0
+    entities_tokens_seq = encoder_inputs*mask
+
+    new_flags = []
+    for __, (entities_tokens, pred, flag) in enumerate(zip(entities_tokens_seq, preds, flags.squeeze(1))):
+        new_flag = copy.deepcopy(flag)
+        pred = pred[-1]
+
+        for _id, token in enumerate(entities_tokens):
+            if token == tokenizer.pad_token_id:
+                continue
+
+            if token == pred and flag[_id] == 1:
+                new_flag[_id] = 2
+            
+        new_flags.append(new_flag.unsqueeze(0))
+
+    return torch.cat(new_flags, dim=0).unsqueeze(1).to(device)
 
 @torch.no_grad()
 def greedy_generate(decoder, tokens=None, state=None, flag=None, max_length=20, max_len_a=0.0, num_beams=1,
                     bos_token_id=None, eos_token_id=None, pad_token_id=0,
-                    repetition_penalty=1, length_penalty=1.0):
+                    repetition_penalty=1, length_penalty=1.0,
+                    encoder_inputs=None, tokenizer=None, nlp=None):
     """
     贪婪地搜索句子
     :param Decoder decoder: Decoder对象
@@ -96,7 +163,8 @@ def greedy_generate(decoder, tokens=None, state=None, flag=None, max_length=20, 
                                              temperature=1, top_k=50, top_p=1,
                                              bos_token_id=bos_token_id, eos_token_id=eos_token_id, do_sample=False,
                                              repetition_penalty=repetition_penalty, length_penalty=length_penalty,
-                                             pad_token_id=pad_token_id)
+                                             pad_token_id=pad_token_id,
+                                             encoder_inputs=encoder_inputs, tokenizer=tokenizer, nlp=nlp)
     else:
         token_ids = _beam_search_generate(decoder, tokens=tokens, state=state, decoder_flag=flag, max_length=max_length, max_len_a=max_len_a,
                                           num_beams=num_beams, temperature=1, top_k=50, top_p=1,
@@ -110,7 +178,8 @@ def greedy_generate(decoder, tokens=None, state=None, flag=None, max_length=20, 
 @torch.no_grad()
 def sample_generate(decoder, tokens=None, state=None, flag=None, max_length=20, max_len_a=0.0, num_beams=1, temperature=1.0, top_k=50,
                     top_p=1.0, bos_token_id=None, eos_token_id=None, pad_token_id=0, repetition_penalty=1.0,
-                    length_penalty=1.0):
+                    length_penalty=1.0,
+                    encoder_inputs=None, tokenizer=None, nlp=None):
     """
     使用采样的方法生成句子
     :param Decoder decoder: Decoder对象
@@ -130,12 +199,13 @@ def sample_generate(decoder, tokens=None, state=None, flag=None, max_length=20, 
     :return:
     """
     # 每个位置在生成的时候会sample生成
-    if num_beams == 1:
+    if num_beams == 1: ## default
         token_ids = _no_beam_search_generate(decoder, tokens=tokens, state=state, decoder_flag=flag, max_length=max_length, max_len_a=max_len_a,
                                              temperature=temperature, top_k=top_k, top_p=top_p,
                                              bos_token_id=bos_token_id, eos_token_id=eos_token_id, do_sample=True,
                                              repetition_penalty=repetition_penalty, length_penalty=length_penalty,
-                                             pad_token_id=pad_token_id)
+                                             pad_token_id=pad_token_id,
+                                             encoder_inputs=encoder_inputs, tokenizer=tokenizer, nlp=nlp)
     else:
         token_ids = _beam_search_generate(decoder, tokens=tokens, state=state, decoder_flag=flag, max_length=max_length, max_len_a=max_len_a,
                                           num_beams=num_beams, temperature=temperature, top_k=top_k, top_p=top_p,
@@ -147,7 +217,8 @@ def sample_generate(decoder, tokens=None, state=None, flag=None, max_length=20, 
 
 def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, tokens=None, decoder_flag=None, max_length=20, max_len_a=0.0, temperature=1.0, top_k=50,
                              top_p=1.0, bos_token_id=None, eos_token_id=None, do_sample=True,
-                             repetition_penalty=1.0, length_penalty=1.0, pad_token_id=0):
+                             repetition_penalty=1.0, length_penalty=1.0, pad_token_id=0,
+                             encoder_inputs=None, tokenizer=None, nlp=None):
     device = _get_model_device(decoder)
     if tokens is None:
         if bos_token_id is None:
@@ -189,6 +260,7 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, tokens=None, decode
             max_lengths = tokens.new_full((tokens.size(0),), fill_value=max_length, dtype=torch.long)
     #print(token_ids.size())
     while cur_len < real_max_length:
+        decoder_flag = update_flag(encoder_inputs, token_ids, decoder_flag, tokenizer, nlp)
         scores = decoder.decode(tokens=token_ids, state=state, flag=decoder_flag)  # batch_size x vocab_size
 
         if repetition_penalty != 1.0:
@@ -231,11 +303,11 @@ def _no_beam_search_generate(decoder: Seq2SeqDecoder, state, tokens=None, decode
 
         if dones.min() == 1:
             break
-
     # if eos_token_id is not None:
     #     tokens.scatter(index=max_lengths[:, None], dim=1, value=eos_token_id)  # 将最大长度位置设置为eos
         # if cur_len == max_length:
         #     token_ids[:, -1].masked_fill_(~dones, eos_token_id)  # 若到最长长度仍未到EOS，则强制将最后一个词替换成eos
+
     return token_ids
 
 

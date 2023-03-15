@@ -1,0 +1,114 @@
+device: cuda:0
+batch_size: 10
+max_seq_length: 100
+generated_max_length: 150
+max_candidate_length: 20
+train_num: -1
+dev_num: -1
+test_num: -1
+entity_level: element
+train_file: /home/seonjeongh/data/MHCQG/element_based/element_dev.json
+dev_file: /home/seonjeongh/data/MHCQG/element_based/element_dev.json
+test_file: /home/seonjeongh/data/MHCQG/element_based/element_dev.json
+gpus: True
+seed: 42
+model_folder: element_level
+bert_folder: 
+bert_model_name: mbart-large-cc25
+checkpoint: None
+mode: train
+learning_rate: 2e-05
+max_grad_norm: 1.0
+num_epochs: 50
+early_stop: 10
+task: bert2tf
+fp16: 0
+[Data Info] Reading training data
+[Data Info] Reading file: /home/seonjeongh/data/MHCQG/element_based/element_dev.json
+['john', 'berry', '(', 'september', '6', ',', '1917', '–', 'november', '29', ',', '1999', ')', 'was', 'an', 'american', 'film', 'director', ',', 'who', 'went', 'into', 'self', '-', 'exile', 'in', 'france', 'when', 'his', 'career']
+[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+did
+[0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+john
+1 john john
+2 berry john
+[0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+berry
+1 john berry
+2 berry berry
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+and
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+bret
+39 ernest bret
+40 bret bret
+41 ##ai bret
+42 ##gne bret
+43 wind bret
+44 ##ust bret
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+##ai
+39 ernest ##ai
+40 bret ##ai
+41 ##ai ##ai
+42 ##gne ##ai
+43 wind ##ai
+44 ##ust ##ai
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+##gne
+39 ernest ##gne
+40 bret ##gne
+41 ##ai ##gne
+42 ##gne ##gne
+43 wind ##gne
+44 ##ust ##gne
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+wind
+39 ernest wind
+40 bret wind
+41 ##ai wind
+42 ##gne wind
+43 wind wind
+44 ##ust wind
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+##ust
+39 ernest ##ust
+40 bret ##ust
+41 ##ai ##ust
+42 ##gne ##ust
+43 wind ##ust
+44 ##ust ##ust
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+both
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+get
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+black
+35 hollywood black
+36 black black
+37 ##list black
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+##list
+35 hollywood ##list
+36 black ##list
+37 ##list ##list
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+--------------
+##ed
+35 hollywood ##ed
+36 black ##ed
+37 ##list ##ed
+[0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
